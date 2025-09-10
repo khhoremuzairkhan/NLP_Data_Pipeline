@@ -9,15 +9,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.metrics.pairwise import cosine_similarity
 import PyPDF2
-from transformers import pipeline
-import torch
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
-# Simple text processing without NLTK
+# Simple text processing without external dependencies
 STOP_WORDS = {
     'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 
     'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 
@@ -68,7 +66,7 @@ class PDFProcessor:
         return text
     
     def simple_tokenize(self, text):
-        """Simple tokenization without NLTK"""
+        """Simple tokenization without external dependencies"""
         # Split into words and remove stopwords
         words = text.split()
         cleaned_words = [
@@ -78,92 +76,58 @@ class PDFProcessor:
         return ' '.join(cleaned_words)
 
 class TextSummarizer:
-    """Handle text summarization using transformers"""
-    
-    def __init__(self):
-        try:
-            # Use a lightweight summarization model
-            self.summarizer = pipeline(
-                "summarization", 
-                model="facebook/bart-large-cnn",
-                device=0 if torch.cuda.is_available() else -1
-            )
-        except Exception as e:
-            st.error(f"Error loading summarization model: {str(e)}")
-            self.summarizer = None
+    """Handle text summarization using extractive methods"""
     
     def split_into_sentences(self, text):
         """Simple sentence splitting"""
         sentences = re.split(r'[.!?]+', text)
-        return [s.strip() for s in sentences if s.strip()]
+        return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
     
-    def chunk_text(self, text, max_length=1000):
-        """Split text into chunks for summarization"""
-        sentences = self.split_into_sentences(text)
-        chunks = []
-        current_chunk = ""
-        
-        for sentence in sentences:
-            if len(current_chunk + sentence) < max_length:
-                current_chunk += sentence + ". "
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = sentence + ". "
-        
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        
-        return chunks
-    
-    def summarize_text(self, text, max_length=150, min_length=50):
-        """Generate summary of text"""
-        if not self.summarizer or not text:
-            return self.extractive_summary(text)
-        
+    def extractive_summarization(self, text, num_sentences=3):
+        """Extractive summarization using TF-IDF scoring"""
         try:
-            # Handle long texts by chunking
-            if len(text) > 1000:
-                chunks = self.chunk_text(text, 1000)
-                summaries = []
-                
-                for chunk in chunks[:3]:  # Limit to first 3 chunks
-                    if len(chunk) > 100:  # Only summarize substantial chunks
-                        result = self.summarizer(
-                            chunk, 
-                            max_length=max_length//len(chunks[:3]), 
-                            min_length=min_length//len(chunks[:3]),
-                            do_sample=False
-                        )
-                        summaries.append(result[0]['summary_text'])
-                
-                return ' '.join(summaries)
-            else:
-                if len(text) < 100:
-                    return text  # Return original if too short
-                
-                result = self.summarizer(
-                    text, 
-                    max_length=max_length, 
-                    min_length=min_length,
-                    do_sample=False
-                )
-                return result[0]['summary_text']
-                
+            sentences = self.split_into_sentences(text)
+            
+            if len(sentences) <= num_sentences:
+                return text
+            
+            # Calculate TF-IDF scores for sentences
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=100)
+            sentence_vectors = vectorizer.fit_transform(sentences)
+            
+            # Calculate sentence scores (sum of TF-IDF scores)
+            sentence_scores = np.array(sentence_vectors.sum(axis=1)).flatten()
+            
+            # Get top sentences
+            top_indices = sentence_scores.argsort()[-num_sentences:][::-1]
+            top_indices.sort()  # Keep original order
+            
+            summary_sentences = [sentences[i] for i in top_indices]
+            return '. '.join(summary_sentences) + '.'
+            
         except Exception as e:
-            st.error(f"Error during summarization: {str(e)}")
-            return self.extractive_summary(text)
+            # Fallback: return first, middle, and last sentences
+            sentences = self.split_into_sentences(text)
+            if len(sentences) <= num_sentences:
+                return text
+            
+            indices = [0, len(sentences)//2, -1]
+            summary_sentences = [sentences[i] for i in indices[:num_sentences]]
+            return '. '.join(summary_sentences) + '.'
     
-    def extractive_summary(self, text, num_sentences=3):
-        """Fallback extractive summarization"""
-        sentences = self.split_into_sentences(text)
-        if len(sentences) <= num_sentences:
-            return text
+    def summarize_text(self, text, max_length=150):
+        """Generate summary with length control"""
+        # Determine number of sentences based on desired length
+        avg_sentence_length = 20  # rough estimate
+        target_sentences = max(1, max_length // avg_sentence_length)
         
-        # Simple extractive approach - take first, middle, and last sentences
-        indices = [0, len(sentences)//2, -1]
-        summary_sentences = [sentences[i] for i in indices[:num_sentences]]
-        return '. '.join(summary_sentences)
+        summary = self.extractive_summarization(text, target_sentences)
+        
+        # Trim if still too long
+        if len(summary) > max_length:
+            summary = summary[:max_length].rsplit(' ', 1)[0] + '...'
+        
+        return summary
 
 class TopicModeler:
     """Handle topic modeling and tag generation"""
@@ -288,6 +252,12 @@ class EvaluationMetrics:
         overlap = len(original_words & summary_words) / len(original_words) if original_words else 0
         metrics['word_overlap'] = overlap
         
+        # Readability approximation (simple version)
+        sentences = len(re.split(r'[.!?]+', summary))
+        words = len(summary.split())
+        avg_sentence_length = words / sentences if sentences > 0 else 0
+        metrics['avg_sentence_length'] = avg_sentence_length
+        
         return metrics
     
     def evaluate_topics(self, topic_model, texts):
@@ -348,26 +318,30 @@ def create_visualizations(topic_model, summaries, tags_list):
     # Tag frequency
     if tags_list:
         all_tags = [tag for tags in tags_list for tag in tags]
-        tag_counts = pd.Series(all_tags).value_counts().head(10)
-        
-        fig_tags = px.bar(
-            x=tag_counts.index,
-            y=tag_counts.values,
-            title="Most Frequent Tags",
-            labels={'x': 'Tags', 'y': 'Frequency'}
-        )
-        st.plotly_chart(fig_tags)
+        if all_tags:
+            tag_counts = pd.Series(all_tags).value_counts().head(10)
+            
+            fig_tags = px.bar(
+                x=tag_counts.index,
+                y=tag_counts.values,
+                title="Most Frequent Tags",
+                labels={'x': 'Tags', 'y': 'Frequency'}
+            )
+            st.plotly_chart(fig_tags)
     
     # Word cloud of summaries
     if summaries:
         all_summaries = ' '.join(summaries)
         if all_summaries.strip():
-            wordcloud = WordCloud(width=800, height=400, background_color='white').generate(all_summaries)
-            
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.imshow(wordcloud, interpolation='bilinear')
-            ax.axis('off')
-            st.pyplot(fig)
+            try:
+                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(all_summaries)
+                
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.imshow(wordcloud, interpolation='bilinear')
+                ax.axis('off')
+                st.pyplot(fig)
+            except Exception as e:
+                st.warning(f"Could not generate word cloud: {e}")
 
 def main():
     st.set_page_config(
@@ -513,6 +487,7 @@ def main():
                     
                     st.write(f"**Compression Ratio:** {metrics['compression_ratio']:.3f}")
                     st.write(f"**Word Overlap:** {metrics['word_overlap']:.3f}")
+                    st.write(f"**Avg Sentence Length:** {metrics['avg_sentence_length']:.1f}")
                 
                 # Show original text (truncated)
                 if st.checkbox(f"Show original text for {result['filename']}", key=f"show_text_{i}"):
@@ -572,14 +547,14 @@ def main():
         
         1. **PDF Text Extraction** - Extracts raw text from uploaded PDF files
         2. **Text Preprocessing** - Cleans and normalizes the text data
-        3. **Summarization** - Creates concise summaries using transformer models
+        3. **Extractive Summarization** - Creates concise summaries using TF-IDF scoring
         4. **Topic Modeling** - Identifies key themes using Latent Dirichlet Allocation
         5. **Tag Generation** - Produces relevant tags based on topic analysis
         6. **Evaluation** - Provides quality metrics for summaries and topics
         
         **Features:**
         - ✅ Multiple PDF upload support
-        - ✅ Automatic text summarization
+        - ✅ Automatic extractive summarization
         - ✅ AI-powered tag generation
         - ✅ Topic modeling and visualization
         - ✅ Quality evaluation metrics
