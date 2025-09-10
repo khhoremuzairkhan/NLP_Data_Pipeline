@@ -163,7 +163,13 @@ class TextSummarizer:
     
     def extractive_summary(self, text, num_sentences=3):
         """Fallback extractive summarization"""
-        sentences = sent_tokenize(text)
+        try:
+            sentences = sent_tokenize(text)
+        except Exception:
+            # Fallback to simple sentence splitting
+            sentences = text.split('. ')
+            sentences = [s + '.' for s in sentences[:-1]] + [sentences[-1]] if sentences else [text]
+        
         if len(sentences) <= num_sentences:
             return text
         
