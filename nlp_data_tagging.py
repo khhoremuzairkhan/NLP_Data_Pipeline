@@ -1,49 +1,41 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
-import tempfile
-import pickle
+import re
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
-from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 import PyPDF2
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize, sent_tokenize
-from nltk.stem import WordNetLemmatizer
-import re
-from transformers import pipeline, AutoTokenizer, AutoModel
+from transformers import pipeline
 import torch
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import seaborn as sns
-from rouge import Rouge
-from textstat import flesch_reading_ease, flesch_kincaid_grade
 import warnings
 warnings.filterwarnings('ignore')
 
-# Download required NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-    nltk.data.find('corpora/stopwords')
-    nltk.data.find('corpora/wordnet')
-except LookupError:
-    nltk.download('punkt')
-    nltk.download('stopwords')
-    nltk.download('wordnet')
+# Simple text processing without NLTK
+STOP_WORDS = {
+    'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 
+    'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 
+    'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves', 
+    'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'is', 'are', 
+    'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 
+    'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because', 'as', 'until', 
+    'while', 'of', 'at', 'by', 'for', 'with', 'through', 'during', 'before', 'after', 
+    'above', 'below', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 
+    'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 
+    'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 
+    'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can', 'will', 'just', 
+    'should', 'now'
+}
 
 class PDFProcessor:
     """Handle PDF text extraction and preprocessing"""
     
-    def __init__(self):
-        self.lemmatizer = WordNetLemmatizer()
-        self.stop_words = set(stopwords.words('english'))
-        
     def extract_text_from_pdf(self, pdf_file):
         """Extract text from uploaded PDF file"""
         try:
@@ -75,18 +67,15 @@ class PDFProcessor:
         
         return text
     
-    def tokenize_and_lemmatize(self, text):
-        """Tokenize and lemmatize text"""
-        tokens = word_tokenize(text)
-        
-        # Remove stopwords and short tokens
-        tokens = [
-            self.lemmatizer.lemmatize(token) 
-            for token in tokens 
-            if token not in self.stop_words and len(token) > 2
+    def simple_tokenize(self, text):
+        """Simple tokenization without NLTK"""
+        # Split into words and remove stopwords
+        words = text.split()
+        cleaned_words = [
+            word for word in words 
+            if word.lower() not in STOP_WORDS and len(word) > 2
         ]
-        
-        return ' '.join(tokens)
+        return ' '.join(cleaned_words)
 
 class TextSummarizer:
     """Handle text summarization using transformers"""
@@ -103,19 +92,24 @@ class TextSummarizer:
             st.error(f"Error loading summarization model: {str(e)}")
             self.summarizer = None
     
+    def split_into_sentences(self, text):
+        """Simple sentence splitting"""
+        sentences = re.split(r'[.!?]+', text)
+        return [s.strip() for s in sentences if s.strip()]
+    
     def chunk_text(self, text, max_length=1000):
         """Split text into chunks for summarization"""
-        sentences = sent_tokenize(text)
+        sentences = self.split_into_sentences(text)
         chunks = []
         current_chunk = ""
         
         for sentence in sentences:
             if len(current_chunk + sentence) < max_length:
-                current_chunk += sentence + " "
+                current_chunk += sentence + ". "
             else:
                 if current_chunk:
                     chunks.append(current_chunk.strip())
-                current_chunk = sentence + " "
+                current_chunk = sentence + ". "
         
         if current_chunk:
             chunks.append(current_chunk.strip())
@@ -125,7 +119,7 @@ class TextSummarizer:
     def summarize_text(self, text, max_length=150, min_length=50):
         """Generate summary of text"""
         if not self.summarizer or not text:
-            return "Summary unavailable"
+            return self.extractive_summary(text)
         
         try:
             # Handle long texts by chunking
@@ -158,25 +152,18 @@ class TextSummarizer:
                 
         except Exception as e:
             st.error(f"Error during summarization: {str(e)}")
-            # Fallback to extractive summary
-            return self.extractive_summary(text, num_sentences=3)
+            return self.extractive_summary(text)
     
     def extractive_summary(self, text, num_sentences=3):
         """Fallback extractive summarization"""
-        try:
-            sentences = sent_tokenize(text)
-        except Exception:
-            # Fallback to simple sentence splitting
-            sentences = text.split('. ')
-            sentences = [s + '.' for s in sentences[:-1]] + [sentences[-1]] if sentences else [text]
-        
+        sentences = self.split_into_sentences(text)
         if len(sentences) <= num_sentences:
             return text
         
         # Simple extractive approach - take first, middle, and last sentences
         indices = [0, len(sentences)//2, -1]
         summary_sentences = [sentences[i] for i in indices[:num_sentences]]
-        return ' '.join(summary_sentences)
+        return '. '.join(summary_sentences)
 
 class TopicModeler:
     """Handle topic modeling and tag generation"""
@@ -261,7 +248,6 @@ class TopicModeler:
             return unique_tags[:n_tags]
             
         except Exception as e:
-            st.error(f"Error generating tags: {str(e)}")
             return self.fallback_tags(text, n_tags)
     
     def fallback_tags(self, text, n_tags=5):
@@ -289,37 +275,18 @@ class TopicModeler:
 class EvaluationMetrics:
     """Evaluate summaries and topic models"""
     
-    def __init__(self):
-        self.rouge = Rouge()
-    
     def evaluate_summary(self, original_text, summary):
         """Evaluate summary quality"""
         metrics = {}
         
-        try:
-            # ROUGE scores (using first 1000 chars of original as reference)
-            reference = original_text[:1000] if len(original_text) > 1000 else original_text
-            
-            rouge_scores = self.rouge.get_scores(summary, reference, avg=True)
-            metrics['rouge_1_f'] = rouge_scores['rouge-1']['f']
-            metrics['rouge_2_f'] = rouge_scores['rouge-2']['f']
-            metrics['rouge_l_f'] = rouge_scores['rouge-l']['f']
-            
-        except Exception as e:
-            metrics['rouge_1_f'] = 0
-            metrics['rouge_2_f'] = 0
-            metrics['rouge_l_f'] = 0
-        
         # Compression ratio
         metrics['compression_ratio'] = len(summary) / len(original_text) if original_text else 0
         
-        # Readability scores
-        try:
-            metrics['flesch_reading_ease'] = flesch_reading_ease(summary)
-            metrics['flesch_kincaid_grade'] = flesch_kincaid_grade(summary)
-        except:
-            metrics['flesch_reading_ease'] = 0
-            metrics['flesch_kincaid_grade'] = 0
+        # Simple overlap metric
+        original_words = set(original_text.lower().split())
+        summary_words = set(summary.lower().split())
+        overlap = len(original_words & summary_words) / len(original_words) if original_words else 0
+        metrics['word_overlap'] = overlap
         
         return metrics
     
@@ -329,10 +296,8 @@ class EvaluationMetrics:
             return {}
         
         try:
-            # Coherence score (simplified version)
-            topics = topic_model.get_topic_terms(n_words=10)
-            
             # Topic diversity
+            topics = topic_model.get_topic_terms(n_words=10)
             all_words = []
             for topic_words in topics.values():
                 all_words.extend(topic_words)
@@ -455,7 +420,7 @@ def main():
             if raw_text:
                 # Preprocess
                 cleaned_text = pdf_processor.preprocess_text(raw_text)
-                processed_text = pdf_processor.tokenize_and_lemmatize(cleaned_text)
+                processed_text = pdf_processor.simple_tokenize(cleaned_text)
                 
                 # Summarize
                 summary = text_summarizer.summarize_text(
@@ -546,13 +511,8 @@ def main():
                     st.subheader("📊 Quality Metrics")
                     metrics = evaluator.evaluate_summary(result['raw_text'], result['summary'])
                     
-                    metric_col1, metric_col2 = st.columns(2)
-                    with metric_col1:
-                        st.write(f"**ROUGE-1:** {metrics['rouge_1_f']:.3f}")
-                        st.write(f"**ROUGE-L:** {metrics['rouge_l_f']:.3f}")
-                    with metric_col2:
-                        st.write(f"**Readability:** {metrics['flesch_reading_ease']:.1f}")
-                        st.write(f"**Grade Level:** {metrics['flesch_kincaid_grade']:.1f}")
+                    st.write(f"**Compression Ratio:** {metrics['compression_ratio']:.3f}")
+                    st.write(f"**Word Overlap:** {metrics['word_overlap']:.3f}")
                 
                 # Show original text (truncated)
                 if st.checkbox(f"Show original text for {result['filename']}", key=f"show_text_{i}"):
